@@ -30,8 +30,8 @@ const runSchema = new mongoose.Schema(
         default: 'LineString',
       },
       coordinates: {
-        type: [[Number]], // [[lng, lat], [lng, lat], ...]
-        required: true,
+        type: [[Number]],
+        default: [], // ✅ allow empty initially
       },
     },
 
@@ -66,7 +66,14 @@ const runSchema = new mongoose.Schema(
 );
 
 // Index for geospatial queries
-runSchema.index({ route: '2dsphere' });
+runSchema.index(
+  { route: '2dsphere' },
+  {
+    partialFilterExpression: {
+      'route.coordinates.1': { $exists: true }, // at least 2 points
+    },
+  }
+);
 runSchema.index({ user: 1, createdAt: -1 });
 
 const Run = mongoose.model('Run', runSchema);

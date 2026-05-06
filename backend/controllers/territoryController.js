@@ -228,7 +228,8 @@ export const getTerritoryById = async (req, res, next) => {
     const territory = await Territory.findById(req.params.id)
       .populate('owner', 'name color avatar')
       .populate('battleHistory.challenger', 'name')
-      .populate('battleHistory.defender', 'name');
+      .populate('battleHistory.defender', 'name')
+      .populate('previousOwners.user', 'name color');
 
     if (!territory) return res.status(404).json({ success: false, message: 'Territory not found' });
     res.status(200).json({ success: true, territory });
