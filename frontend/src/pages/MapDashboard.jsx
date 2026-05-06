@@ -1,0 +1,630 @@
+import { useEffect, useState, useContext, useRef, useMemo } from 'react';
+import { AuthContext } from '../context/AuthContext';
+
+import {
+  MapContainer,
+  TileLayer,
+  Polygon,
+  Polyline,
+  Popup,
+  CircleMarker,
+  useMap,
+} from 'react-leaflet';
+
+import {
+  Play,
+  Square,
+  Activity,
+  LocateFixed,
+  Trophy,
+  User as UserIcon,
+} from 'lucide-react';
+
+import 'leaflet/dist/leaflet.css';
+
+import LeaderboardPanel from '../components/LeaderboardPanel';
+import ProfilePanel from '../components/ProfilePanel';
+
+// ======================================================
+// RE-CENTER CONTROL
+// ======================================================
+
+function RecenterControl({ position }) {
+  const map = useMap();
+
+  return (
+    <button
+      onClick={() => map.flyTo(position, 18, { animate: true })}
+      className="absolute bottom-28 right-6 z-[1000]
+                 bg-gray-800/80 backdrop-blur-md
+                 border border-gray-600
+                 p-3 rounded-full shadow-lg
+                 text-blue-400 hover:text-blue-300
+                 hover:bg-gray-700 transition-all"
+    >
+      <LocateFixed size={24} />
+    </button>
+  );
+}
+
+// ======================================================
+// GPS DISTANCE HELPER
+// ======================================================
+
+function getDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371e3;
+  const rad = Math.PI / 180;
+
+  const dLat = (lat2 - lat1) * rad;
+  const dLon = (lon2 - lon1) * rad;
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * rad) *
+      Math.cos(lat2 * rad) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c;
+}
+
+// ======================================================
+// MAIN COMPONENT
+// ======================================================
+
+export default function MapDashboard() {
+  const { token } = useContext(AuthContext);
+
+  const [territories, setTerritories] = useState([]);
+  const [position, setPosition] = useState(null);
+
+  const [isTracking, setIsTracking] = useState(false);
+  const [activeRunId, setActiveRunId] = useState(null);
+
+  const [routePoints, setRoutePoints] = useState([]);
+
+  /**
+   * IMPORTANT:
+   * Backend is the ONLY source of truth for distance.
+   *
+   * Why?
+   * - avoids frontend/backend drift
+   * - prevents cheating
+   * - ensures consistent territory calculations
+   * - allows server-side smoothing/filtering
+   */
+  const [currentDistance, setCurrentDistance] = useState(0);
+
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
+
+  // ======================================================
+  // REFS
+  // ======================================================
+
+  const watchIdRef = useRef(null);
+
+  // Prevent overlapping syncs
+  const syncingRef = useRef(false);
+
+  // Latest route point without stale closures
+  const latestPointRef = useRef(null);
+
+  // GPS queue for batching
+  const pendingPointsRef = useRef([]);
+
+  // Sync timer
+  const syncIntervalRef = useRef(null);
+
+  // ======================================================
+  // INITIAL GPS + TERRITORIES
+  // ======================================================
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setPosition([pos.coords.latitude, pos.coords.longitude]);
+      },
+      (err) => console.error('GPS Error:', err),
+      {
+        enableHighAccuracy: true,
+      }
+    );
+
+    fetchTerritories(controller.signal);
+
+    return () => {
+      controller.abort();
+    };
+  }, [token]);
+
+  // ======================================================
+  // FETCH TERRITORIES
+  // ======================================================
+
+  const fetchTerritories = async (signal) => {
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/territories`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          signal,
+        }
+      );
+
+      const data = await res.json();
+
+      if (data.success) {
+        setTerritories(data.territories);
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error('Failed to fetch territories', err);
+      }
+    }
+  };
+
+  // ======================================================
+  // TERRITORY MEMOIZATION
+  // Prevents expensive polygon rerenders
+  // ======================================================
+
+  const territoryPolygons = useMemo(() => {
+    return territories.map((territory) => {
+      const leafletCoords = territory.boundary.coordinates[0].map(
+        (coord) => [coord[1], coord[0]]
+      );
+
+      return (
+        <Polygon
+          key={territory._id}
+          positions={leafletCoords}
+          pathOptions={{
+            color: territory.color,
+            fillColor: territory.color,
+            fillOpacity: 0.3,
+            weight: 2,
+          }}
+        >
+          <Popup>
+            <div className="font-bold text-center">
+              {territory.name}
+            </div>
+          </Popup>
+        </Polygon>
+      );
+    });
+  }, [territories]);
+
+  // ======================================================
+  // GPS SYNC ENGINE
+  // Batch sync every 2 seconds
+  // ======================================================
+
+  useEffect(() => {
+    if (!isTracking || !activeRunId) return;
+
+    syncIntervalRef.current = setInterval(async () => {
+      if (
+        syncingRef.current ||
+        pendingPointsRef.current.length === 0
+      ) {
+        return;
+      }
+
+      syncingRef.current = true;
+
+      const controller = new AbortController();
+
+      try {
+        const pointsToSend = [...pendingPointsRef.current];
+
+        pendingPointsRef.current = [];
+
+        const res = await fetch(
+          `${import.meta.env.VITE_API_URL}/runs/${activeRunId}/batch-points`,
+          {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            signal: controller.signal,
+            body: JSON.stringify({
+              points: pointsToSend,
+            }),
+          }
+        );
+
+        const data = await res.json();
+
+        if (data.success) {
+          /**
+           * BACKEND-CALCULATED DISTANCE
+           * Never calculate distance on frontend.
+           */
+          setCurrentDistance(data.distance);
+        }
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          console.error('Failed to sync points', err);
+
+          /**
+           * Requeue failed points
+           */
+          pendingPointsRef.current.unshift(
+            ...pendingPointsRef.current
+          );
+        }
+      } finally {
+        syncingRef.current = false;
+      }
+
+      return () => {
+        controller.abort();
+      };
+    }, 2000);
+
+    return () => {
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+      }
+    };
+  }, [isTracking, activeRunId, token]);
+
+  // ======================================================
+  // LIVE GPS WATCHER
+  // Lightweight callback only
+  // ======================================================
+
+  useEffect(() => {
+    if (!isTracking || !activeRunId) return;
+
+    watchIdRef.current =
+      navigator.geolocation.watchPosition(
+        (pos) => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          const speed = pos.coords.speed || 0;
+          const altitude = pos.coords.altitude || 0;
+
+          const newPoint = [lat, lng];
+
+          // ==========================================
+          // POSITION UPDATE
+          // ==========================================
+
+          setPosition(newPoint);
+
+          // ==========================================
+          // RACE CONDITION SAFE
+          // ==========================================
+
+          const lastPoint = latestPointRef.current;
+
+          if (lastPoint) {
+            const movedDistance = getDistance(
+              lastPoint[0],
+              lastPoint[1],
+              lat,
+              lng
+            );
+
+            /**
+             * Ignore GPS jitter
+             */
+            if (movedDistance < 1.5) {
+              return;
+            }
+          }
+
+          // ==========================================
+          // UPDATE REFS
+          // ==========================================
+
+          latestPointRef.current = newPoint;
+
+          // ==========================================
+          // UPDATE UI TRAIL
+          // ==========================================
+
+          setRoutePoints((prev) => [...prev, newPoint]);
+
+          // ==========================================
+          // QUEUE FOR BATCH SYNC
+          // ==========================================
+
+          pendingPointsRef.current.push({
+            coordinates: [lng, lat],
+            speed,
+            altitude,
+            timestamp: Date.now(),
+          });
+        },
+        (err) => {
+          console.error('Watch Error:', err);
+        },
+        {
+          enableHighAccuracy: true,
+
+          /**
+           * Slight cache allowed
+           * better battery life
+           */
+          maximumAge: 1000,
+
+          timeout: 10000,
+        }
+      );
+
+    return () => {
+      if (watchIdRef.current) {
+        navigator.geolocation.clearWatch(
+          watchIdRef.current
+        );
+      }
+    };
+  }, [isTracking, activeRunId]);
+
+  // ======================================================
+  // START RUN
+  // ======================================================
+
+  const handleStartRun = async () => {
+    if (!position) return;
+
+    const controller = new AbortController();
+
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/runs/start`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            startCoordinates: [position[1], position[0]],
+          }),
+        }
+      );
+
+      const data = await res.json();
+
+      if (data.success) {
+        setActiveRunId(data.run._id);
+
+        setRoutePoints([position]);
+
+        latestPointRef.current = position;
+
+        pendingPointsRef.current = [];
+
+        setCurrentDistance(0);
+
+        setIsTracking(true);
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error('Failed to start run', err);
+      }
+    }
+
+    return () => {
+      controller.abort();
+    };
+  };
+
+  // ======================================================
+  // END RUN
+  // ======================================================
+
+  const handleEndRun = async () => {
+    setIsTracking(false);
+
+    const controller = new AbortController();
+
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL}/runs/${activeRunId}/end`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          signal: controller.signal,
+        }
+      );
+
+      const data = await res.json();
+
+      if (data.success) {
+        setActiveRunId(null);
+
+        setRoutePoints([]);
+
+        latestPointRef.current = null;
+
+        pendingPointsRef.current = [];
+
+        fetchTerritories(controller.signal);
+
+        alert(
+          `Run Complete! Official Distance: ${Math.round(
+            data.run.distance
+          )}m`
+        );
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error('Failed to end run', err);
+      }
+    }
+
+    return () => {
+      controller.abort();
+    };
+  };
+
+  // ======================================================
+  // LOADING
+  // ======================================================
+
+  if (!position) {
+    return (
+      <div className="h-[100dvh] w-full bg-gray-900 flex flex-col items-center justify-center text-white">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mb-4" />
+
+        <p className="animate-pulse">
+          Acquiring GPS Signal...
+        </p>
+      </div>
+    );
+  }
+
+  // ======================================================
+  // MAIN UI
+  // ======================================================
+
+  return (
+    <div className="h-[100dvh] w-full relative bg-gray-900 overflow-hidden">
+      <MapContainer
+        center={position}
+        zoom={18}
+        zoomControl={false}
+        className="h-full w-full z-0"
+      >
+        <TileLayer
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+          attribution="&copy; CARTO"
+        />
+
+        {/* PLAYER */}
+        <CircleMarker
+          center={position}
+          radius={8}
+          pathOptions={{
+            color: '#3b82f6',
+            fillColor: '#60a5fa',
+            fillOpacity: 1,
+            weight: 3,
+          }}
+        />
+
+        {/* MEMOIZED TERRITORIES */}
+        {territoryPolygons}
+
+        {/* LIVE TRAIL */}
+        {isTracking && routePoints.length > 0 && (
+          <Polyline
+            positions={routePoints}
+            pathOptions={{
+              color: '#06b6d4',
+              weight: 5,
+              dashArray: '10, 10',
+            }}
+          />
+        )}
+
+        <RecenterControl position={position} />
+      </MapContainer>
+
+      {/* ======================================================
+          TOP HUD
+      ====================================================== */}
+
+      <div className="absolute top-0 left-0 w-full p-6 flex justify-between items-start z-[1000] pointer-events-none">
+
+        {/* PROFILE */}
+        <div className="pointer-events-auto">
+          <button
+            onClick={() => setIsMenuOpen(true)}
+            className="bg-gray-800/90 backdrop-blur-md border border-gray-600 p-3 rounded-2xl shadow-lg text-white hover:bg-gray-700 transition-all flex items-center gap-2"
+          >
+            <UserIcon
+              size={24}
+              className="text-blue-400"
+            />
+          </button>
+        </div>
+
+        {/* LIVE DISTANCE */}
+        <div className="flex-1 flex justify-center pointer-events-none">
+          {isTracking && (
+            <div className="bg-gray-800/90 backdrop-blur-md px-5 py-2 rounded-full border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.3)] flex items-center gap-3 pointer-events-auto">
+              <Activity
+                className="text-cyan-400 animate-pulse"
+                size={20}
+              />
+
+              <p className="text-xl font-black text-white leading-none tracking-wide">
+                {Math.round(currentDistance)}m
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* LEADERBOARD */}
+        <div className="pointer-events-auto">
+          <button
+            onClick={() =>
+              setIsLeaderboardOpen(true)
+            }
+            className="bg-gray-800/90 backdrop-blur-md border border-gray-600 p-3 rounded-2xl shadow-lg text-white hover:bg-gray-700 transition-all flex items-center gap-2"
+          >
+            <Trophy
+              size={24}
+              className="text-yellow-500"
+            />
+          </button>
+        </div>
+      </div>
+
+      {/* ======================================================
+          BOTTOM BAR
+      ====================================================== */}
+
+      <div className="absolute bottom-10 left-0 w-full flex justify-center z-[1000]">
+        {!isTracking ? (
+          <button
+            onClick={handleStartRun}
+            className="flex items-center gap-3 bg-blue-600 hover:bg-blue-500 text-white px-10 py-5 rounded-full font-black text-xl shadow-[0_0_30px_rgba(37,99,235,0.6)] transition-all transform hover:scale-105 active:scale-95 border-2 border-blue-400"
+          >
+            <Play fill="currentColor" size={28} />
+            TAP TO RUN
+          </button>
+        ) : (
+          <button
+            onClick={handleEndRun}
+            className="flex items-center gap-3 bg-red-600 hover:bg-red-500 text-white px-10 py-5 rounded-full font-black text-xl shadow-[0_0_30px_rgba(220,38,38,0.6)] transition-all animate-pulse border-2 border-red-400 active:scale-95"
+          >
+            <Square fill="currentColor" size={28} />
+            STOP RUN
+          </button>
+        )}
+      </div>
+
+      {/* PANELS */}
+
+      <ProfilePanel
+        isOpen={isMenuOpen}
+        onClose={() => setIsMenuOpen(false)}
+      />
+
+      <LeaderboardPanel
+        isOpen={isLeaderboardOpen}
+        onClose={() =>
+          setIsLeaderboardOpen(false)
+        }
+      />
+    </div>
+  );
+}
