@@ -1,5 +1,5 @@
 import { useState, useContext } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import { MapPin } from 'lucide-react';
 
@@ -15,7 +15,6 @@ export default function Login() {
     setError('');
     
     try {
-      // Hitting your actual Node.js backend!
       const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -26,7 +25,7 @@ export default function Login() {
       
       if (data.success) {
         login(data.user, data.token);
-        navigate('/'); // Send to map on success
+        navigate('/'); 
       } else {
         setError(data.message || 'Login failed');
       }
@@ -73,6 +72,10 @@ export default function Login() {
             Enter the Grid
           </button>
         </form>
+
+        <p className="text-gray-400 text-sm text-center mt-6">
+          New to the city? <Link to="/register" className="text-green-400 hover:text-green-300 font-bold">Enlist here</Link>
+        </p>
 
       </div>
     </div>
