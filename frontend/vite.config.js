@@ -9,4 +9,15 @@ export default defineConfig({
     tailwindcss(),
     basicSsl(),
   ],
+  server: {
+    host: true, // Expose to the network (same as --host)
+    proxy: {
+      // Whenever the frontend asks for "/api", Vite secretly routes it to your backend
+      '/api': {
+        target: 'http://localhost:5000/',
+        changeOrigin: true,
+        secure: false, // Tells Vite it's okay that the backend doesn't have SSL
+      }
+    }
+  }
 })

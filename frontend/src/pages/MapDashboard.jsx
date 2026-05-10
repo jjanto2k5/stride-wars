@@ -1,5 +1,6 @@
 import { useEffect, useState, useContext, useRef, useMemo } from 'react';
 import { AuthContext } from '../context/AuthContext';
+import toast from 'react-hot-toast'; // IMPORTED TOAST
 
 import {
   MapContainer,
@@ -84,17 +85,6 @@ export default function MapDashboard() {
   const [activeRunId, setActiveRunId] = useState(null);
 
   const [routePoints, setRoutePoints] = useState([]);
-
-  /**
-   * IMPORTANT:
-   * Backend is the ONLY source of truth for distance.
-   *
-   * Why?
-   * - avoids frontend/backend drift
-   * - prevents cheating
-   * - ensures consistent territory calculations
-   * - allows server-side smoothing/filtering
-   */
   const [currentDistance, setCurrentDistance] = useState(0);
 
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -103,20 +93,12 @@ export default function MapDashboard() {
   // ======================================================
   // REFS
   // ======================================================
-
   const watchIdRef = useRef(null);
-
-  // Prevent overlapping syncs
   const syncingRef = useRef(false);
-
-  // Latest route point without stale closures
   const latestPointRef = useRef(null);
-
-  // GPS queue for batching
   const pendingPointsRef = useRef([]);
-
-  // Sync timer
   const syncIntervalRef = useRef(null);
+  const wakeLockRef = useRef(null); // Ref for wake lock
 
   // ======================================================
   // INITIAL GPS + TERRITORIES
@@ -129,10 +111,13 @@ export default function MapDashboard() {
       (pos) => {
         setPosition([pos.coords.latitude, pos.coords.longitude]);
       },
-      (err) => console.error('GPS Error:', err),
-      {
-        enableHighAccuracy: true,
-      }
+      (err) => {
+        console.error('GPS Error:', err);
+        if (err.code === err.PERMISSION_DENIED) {
+           toast.error("GPS access denied. Please enable location to play.", { duration: 5000 });
+        }
+      },
+      { enableHighAccuracy: true }
     );
 
     fetchTerritories(controller.signal);
@@ -148,31 +133,21 @@ export default function MapDashboard() {
 
   const fetchTerritories = async (signal) => {
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/territories`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          signal,
-        }
-      );
-
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/territories`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal,
+      });
       const data = await res.json();
-
       if (data.success) {
         setTerritories(data.territories);
       }
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error('Failed to fetch territories', err);
-      }
+      if (err.name !== 'AbortError') console.error('Failed to fetch territories', err);
     }
   };
 
   // ======================================================
   // TERRITORY MEMOIZATION
-  // Prevents expensive polygon rerenders
   // ======================================================
 
   const territoryPolygons = useMemo(() => {
@@ -193,9 +168,7 @@ export default function MapDashboard() {
           }}
         >
           <Popup>
-            <div className="font-bold text-center">
-              {territory.name}
-            </div>
+            <div className="font-bold text-center">{territory.name}</div>
           </Popup>
         </Polygon>
       );
@@ -203,28 +176,19 @@ export default function MapDashboard() {
   }, [territories]);
 
   // ======================================================
-  // GPS SYNC ENGINE
-  // Batch sync every 2 seconds
+  // GPS SYNC ENGINE (Batch sync every 2 seconds)
   // ======================================================
 
   useEffect(() => {
     if (!isTracking || !activeRunId) return;
 
     syncIntervalRef.current = setInterval(async () => {
-      if (
-        syncingRef.current ||
-        pendingPointsRef.current.length === 0
-      ) {
-        return;
-      }
-
+      if (syncingRef.current || pendingPointsRef.current.length === 0) return;
       syncingRef.current = true;
-
       const controller = new AbortController();
 
       try {
         const pointsToSend = [...pendingPointsRef.current];
-
         pendingPointsRef.current = [];
 
         const res = await fetch(
@@ -236,139 +200,66 @@ export default function MapDashboard() {
               Authorization: `Bearer ${token}`,
             },
             signal: controller.signal,
-            body: JSON.stringify({
-              points: pointsToSend,
-            }),
+            body: JSON.stringify({ points: pointsToSend }),
           }
         );
 
         const data = await res.json();
-
-        if (data.success) {
-          /**
-           * BACKEND-CALCULATED DISTANCE
-           * Never calculate distance on frontend.
-           */
-          setCurrentDistance(data.distance);
-        }
+        if (data.success) setCurrentDistance(data.distance);
       } catch (err) {
         if (err.name !== 'AbortError') {
           console.error('Failed to sync points', err);
-
-          /**
-           * Requeue failed points
-           */
-          pendingPointsRef.current.unshift(
-            ...pendingPointsRef.current
-          );
+          pendingPointsRef.current.unshift(...pendingPointsRef.current);
         }
       } finally {
         syncingRef.current = false;
       }
-
-      return () => {
-        controller.abort();
-      };
     }, 2000);
 
     return () => {
-      if (syncIntervalRef.current) {
-        clearInterval(syncIntervalRef.current);
-      }
+      if (syncIntervalRef.current) clearInterval(syncIntervalRef.current);
     };
   }, [isTracking, activeRunId, token]);
 
   // ======================================================
   // LIVE GPS WATCHER
-  // Lightweight callback only
   // ======================================================
 
   useEffect(() => {
     if (!isTracking || !activeRunId) return;
 
-    watchIdRef.current =
-      navigator.geolocation.watchPosition(
-        (pos) => {
-          const lat = pos.coords.latitude;
-          const lng = pos.coords.longitude;
-          const speed = pos.coords.speed || 0;
-          const altitude = pos.coords.altitude || 0;
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const speed = pos.coords.speed || 0;
+        const altitude = pos.coords.altitude || 0;
+        const newPoint = [lat, lng];
 
-          const newPoint = [lat, lng];
+        setPosition(newPoint);
 
-          // ==========================================
-          // POSITION UPDATE
-          // ==========================================
-
-          setPosition(newPoint);
-
-          // ==========================================
-          // RACE CONDITION SAFE
-          // ==========================================
-
-          const lastPoint = latestPointRef.current;
-
-          if (lastPoint) {
-            const movedDistance = getDistance(
-              lastPoint[0],
-              lastPoint[1],
-              lat,
-              lng
-            );
-
-            /**
-             * Ignore GPS jitter
-             */
-            if (movedDistance < 1.5) {
-              return;
-            }
-          }
-
-          // ==========================================
-          // UPDATE REFS
-          // ==========================================
-
-          latestPointRef.current = newPoint;
-
-          // ==========================================
-          // UPDATE UI TRAIL
-          // ==========================================
-
-          setRoutePoints((prev) => [...prev, newPoint]);
-
-          // ==========================================
-          // QUEUE FOR BATCH SYNC
-          // ==========================================
-
-          pendingPointsRef.current.push({
-            coordinates: [lng, lat],
-            speed,
-            altitude,
-            timestamp: Date.now(),
-          });
-        },
-        (err) => {
-          console.error('Watch Error:', err);
-        },
-        {
-          enableHighAccuracy: true,
-
-          /**
-           * Slight cache allowed
-           * better battery life
-           */
-          maximumAge: 1000,
-
-          timeout: 10000,
+        const lastPoint = latestPointRef.current;
+        if (lastPoint) {
+          const movedDistance = getDistance(lastPoint[0], lastPoint[1], lat, lng);
+          if (movedDistance < 1.5) return; // Ignore GPS jitter
         }
-      );
+
+        latestPointRef.current = newPoint;
+        setRoutePoints((prev) => [...prev, newPoint]);
+
+        pendingPointsRef.current.push({
+          coordinates: [lng, lat],
+          speed,
+          altitude,
+          timestamp: Date.now(),
+        });
+      },
+      (err) => console.error('Watch Error:', err),
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+    );
 
     return () => {
-      if (watchIdRef.current) {
-        navigator.geolocation.clearWatch(
-          watchIdRef.current
-        );
-      }
+      if (watchIdRef.current) navigator.geolocation.clearWatch(watchIdRef.current);
     };
   }, [isTracking, activeRunId]);
 
@@ -379,48 +270,46 @@ export default function MapDashboard() {
   const handleStartRun = async () => {
     if (!position) return;
 
+    // Wake Lock: Keep phone screen from sleeping during a run on mobile web
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLockRef.current = await navigator.wakeLock.request('screen');
+      } catch (err) {
+        console.log('Wake Lock failed', err);
+      }
+    }
+
     const controller = new AbortController();
 
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/runs/start`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            startCoordinates: [position[1], position[0]],
-          }),
-        }
-      );
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/runs/start`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({ startCoordinates: [position[1], position[0]] }),
+      });
 
       const data = await res.json();
 
       if (data.success) {
         setActiveRunId(data.run._id);
-
         setRoutePoints([position]);
-
         latestPointRef.current = position;
-
         pendingPointsRef.current = [];
-
         setCurrentDistance(0);
-
         setIsTracking(true);
+        
+        toast.success('Run Started! GPS Active.', {
+          icon: '🏃‍♂️',
+          style: { borderRadius: '10px', background: '#333', color: '#fff' },
+        });
       }
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error('Failed to start run', err);
-      }
+      if (err.name !== 'AbortError') console.error('Failed to start run', err);
     }
-
-    return () => {
-      controller.abort();
-    };
   };
 
   // ======================================================
@@ -429,49 +318,48 @@ export default function MapDashboard() {
 
   const handleEndRun = async () => {
     setIsTracking(false);
+    
+    // Release wake lock so screen can sleep normally again
+    if (wakeLockRef.current) {
+        wakeLockRef.current.release().then(() => { wakeLockRef.current = null; });
+    }
 
     const controller = new AbortController();
 
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/runs/${activeRunId}/end`,
-        {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          signal: controller.signal,
-        }
-      );
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/runs/${activeRunId}/end`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
 
       const data = await res.json();
 
       if (data.success) {
         setActiveRunId(null);
-
         setRoutePoints([]);
-
         latestPointRef.current = null;
-
         pendingPointsRef.current = [];
 
         fetchTerritories(controller.signal);
 
-        alert(
-          `Run Complete! Official Distance: ${Math.round(
-            data.run.distance
-          )}m`
-        );
+        const capturedCount = data.run.territoriesCaptured?.length || 0;
+        
+        if (capturedCount > 0) {
+           toast.success(`Run Complete! You captured ${capturedCount} territories! ⚔️`, {
+             duration: 5000,
+             style: { background: '#1e40af', color: '#fff', fontWeight: 'bold' }
+           });
+        } else {
+           toast.success(`Run Complete! Distance: ${Math.round(data.run.distance)}m`, {
+             icon: '🏁',
+             style: { background: '#333', color: '#fff' }
+           });
+        }
       }
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error('Failed to end run', err);
-      }
+      if (err.name !== 'AbortError') console.error('Failed to end run', err);
     }
-
-    return () => {
-      controller.abort();
-    };
   };
 
   // ======================================================
@@ -482,10 +370,7 @@ export default function MapDashboard() {
     return (
       <div className="h-[100dvh] w-full bg-gray-900 flex flex-col items-center justify-center text-white">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mb-4" />
-
-        <p className="animate-pulse">
-          Acquiring GPS Signal...
-        </p>
+        <p className="animate-pulse">Acquiring GPS Signal...</p>
       </div>
     );
   }
@@ -507,7 +392,6 @@ export default function MapDashboard() {
           attribution="&copy; CARTO"
         />
 
-        {/* PLAYER */}
         <CircleMarker
           center={position}
           radius={8}
@@ -519,10 +403,8 @@ export default function MapDashboard() {
           }}
         />
 
-        {/* MEMOIZED TERRITORIES */}
         {territoryPolygons}
 
-        {/* LIVE TRAIL */}
         {isTracking && routePoints.length > 0 && (
           <Polyline
             positions={routePoints}
@@ -537,34 +419,21 @@ export default function MapDashboard() {
         <RecenterControl position={position} />
       </MapContainer>
 
-      {/* ======================================================
-          TOP HUD
-      ====================================================== */}
-
+      {/* TOP HUD */}
       <div className="absolute top-0 left-0 w-full p-6 flex justify-between items-start z-[1000] pointer-events-none">
-
-        {/* PROFILE */}
         <div className="pointer-events-auto">
           <button
             onClick={() => setIsMenuOpen(true)}
             className="bg-gray-800/90 backdrop-blur-md border border-gray-600 p-3 rounded-2xl shadow-lg text-white hover:bg-gray-700 transition-all flex items-center gap-2"
           >
-            <UserIcon
-              size={24}
-              className="text-blue-400"
-            />
+            <UserIcon size={24} className="text-blue-400" />
           </button>
         </div>
 
-        {/* LIVE DISTANCE */}
         <div className="flex-1 flex justify-center pointer-events-none">
           {isTracking && (
             <div className="bg-gray-800/90 backdrop-blur-md px-5 py-2 rounded-full border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.3)] flex items-center gap-3 pointer-events-auto">
-              <Activity
-                className="text-cyan-400 animate-pulse"
-                size={20}
-              />
-
+              <Activity className="text-cyan-400 animate-pulse" size={20} />
               <p className="text-xl font-black text-white leading-none tracking-wide">
                 {Math.round(currentDistance)}m
               </p>
@@ -572,26 +441,17 @@ export default function MapDashboard() {
           )}
         </div>
 
-        {/* LEADERBOARD */}
         <div className="pointer-events-auto">
           <button
-            onClick={() =>
-              setIsLeaderboardOpen(true)
-            }
+            onClick={() => setIsLeaderboardOpen(true)}
             className="bg-gray-800/90 backdrop-blur-md border border-gray-600 p-3 rounded-2xl shadow-lg text-white hover:bg-gray-700 transition-all flex items-center gap-2"
           >
-            <Trophy
-              size={24}
-              className="text-yellow-500"
-            />
+            <Trophy size={24} className="text-yellow-500" />
           </button>
         </div>
       </div>
 
-      {/* ======================================================
-          BOTTOM BAR
-      ====================================================== */}
-
+      {/* BOTTOM BAR */}
       <div className="absolute bottom-10 left-0 w-full flex justify-center z-[1000]">
         {!isTracking ? (
           <button
@@ -612,19 +472,8 @@ export default function MapDashboard() {
         )}
       </div>
 
-      {/* PANELS */}
-
-      <ProfilePanel
-        isOpen={isMenuOpen}
-        onClose={() => setIsMenuOpen(false)}
-      />
-
-      <LeaderboardPanel
-        isOpen={isLeaderboardOpen}
-        onClose={() =>
-          setIsLeaderboardOpen(false)
-        }
-      />
+      <ProfilePanel isOpen={isMenuOpen} onClose={() => setIsMenuOpen(false)} />
+      <LeaderboardPanel isOpen={isLeaderboardOpen} onClose={() => setIsLeaderboardOpen(false)} />
     </div>
   );
 }
