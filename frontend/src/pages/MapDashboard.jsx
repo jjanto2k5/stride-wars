@@ -71,6 +71,12 @@ function getDistance(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
+const MAX_HUMAN_SPEED = 7; // m/s (~25 km/h)
+const TELEPORT_SPEED = 10; // m/s
+const MAX_GPS_ACCURACY = 40; // meters
+const CHEAT_WARNING_LIMIT = 3;
+const GPS_SAMPLE_SECONDS = 2;
+
 // ======================================================
 // MAIN COMPONENT
 // ======================================================
@@ -90,6 +96,10 @@ export default function MapDashboard() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
 
+  const [liveSpeed, setLiveSpeed] = useState(0);
+  const [cheatWarnings, setCheatWarnings] = useState(0);
+  const [isCheatPaused, setIsCheatPaused] = useState(false);
+
   // ======================================================
   // REFS
   // ======================================================
@@ -99,6 +109,16 @@ export default function MapDashboard() {
   const pendingPointsRef = useRef([]);
   const syncIntervalRef = useRef(null);
   const wakeLockRef = useRef(null); // Ref for wake lock
+  const cheatWarningsRef = useRef(0);
+  const isCheatPausedRef = useRef(false);
+
+  useEffect(() => {
+    cheatWarningsRef.current = cheatWarnings;
+  }, [cheatWarnings]);
+
+  useEffect(() => {
+    isCheatPausedRef.current = isCheatPaused;
+  }, [isCheatPaused]);
 
   // ======================================================
   // INITIAL GPS + TERRITORIES
@@ -232,24 +252,95 @@ export default function MapDashboard() {
       (pos) => {
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
-        const speed = pos.coords.speed || 0;
+
+        const rawSpeed = pos.coords.speed ?? 0;
+        const accuracy = pos.coords.accuracy ?? 999;
         const altitude = pos.coords.altitude || 0;
+
         const newPoint = [lat, lng];
 
         setPosition(newPoint);
 
-        const lastPoint = latestPointRef.current;
-        if (lastPoint) {
-          const movedDistance = getDistance(lastPoint[0], lastPoint[1], lat, lng);
-          if (movedDistance < 1.5) return; // Ignore GPS jitter
+        if (accuracy > MAX_GPS_ACCURACY) {
+          console.log('Ignoring inaccurate GPS point');
+          return;
         }
+
+        let computedSpeed = rawSpeed;
+        const lastPoint = latestPointRef.current;
+
+        if (lastPoint) {
+          const movedDistance = getDistance(
+            lastPoint[0],
+            lastPoint[1],
+            lat,
+            lng
+          );
+
+          if (movedDistance < 1.5) return;
+
+          if (!rawSpeed && movedDistance > 0) {
+            computedSpeed = movedDistance / GPS_SAMPLE_SECONDS;
+          }
+        }
+
+        setLiveSpeed(computedSpeed * 3.6);
+
+        if (computedSpeed > TELEPORT_SPEED) {
+          const nextWarnings = cheatWarningsRef.current + 1;
+
+          setCheatWarnings(nextWarnings);
+          cheatWarningsRef.current = nextWarnings;
+
+          if (nextWarnings >= CHEAT_WARNING_LIMIT) {
+            setIsCheatPaused(true);
+            isCheatPausedRef.current = true;
+
+            toast.error(
+              'Suspicious movement detected. Tracking paused.',
+              {
+                id: 'cheat-paused',
+                duration: 5000,
+              }
+            );
+          }
+
+          return;
+        }
+
+        if (computedSpeed > MAX_HUMAN_SPEED) {
+          const nextWarnings = cheatWarningsRef.current + 1;
+
+          setCheatWarnings(nextWarnings);
+          cheatWarningsRef.current = nextWarnings;
+
+          toast.error('Speed too high for on-foot tracking', {
+            id: 'speed-warning',
+          });
+
+          return;
+        }
+
+        if (isCheatPausedRef.current && computedSpeed <= MAX_HUMAN_SPEED) {
+          setIsCheatPaused(false);
+          isCheatPausedRef.current = false;
+
+          setCheatWarnings(0);
+          cheatWarningsRef.current = 0;
+
+          toast.success('Tracking resumed', {
+            id: 'tracking-resumed',
+          });
+        }
+
+        if (isCheatPausedRef.current) return;
 
         latestPointRef.current = newPoint;
         setRoutePoints((prev) => [...prev, newPoint]);
 
         pendingPointsRef.current.push({
           coordinates: [lng, lat],
-          speed,
+          speed: computedSpeed,
           altitude,
           timestamp: Date.now(),
         });
@@ -300,6 +391,12 @@ export default function MapDashboard() {
         latestPointRef.current = position;
         pendingPointsRef.current = [];
         setCurrentDistance(0);
+        setLiveSpeed(0);
+        setCheatWarnings(0);
+        setIsCheatPaused(false);
+
+        cheatWarningsRef.current = 0;
+        isCheatPausedRef.current = false;
         setIsTracking(true);
         
         toast.success('Run Started! GPS Active.', {
@@ -338,6 +435,12 @@ export default function MapDashboard() {
       if (data.success) {
         setActiveRunId(null);
         setRoutePoints([]);
+        setLiveSpeed(0);
+        setCheatWarnings(0);
+        setIsCheatPaused(false);
+
+        cheatWarningsRef.current = 0;
+        isCheatPausedRef.current = false;
         latestPointRef.current = null;
         pendingPointsRef.current = [];
 
@@ -434,9 +537,15 @@ export default function MapDashboard() {
           {isTracking && (
             <div className="bg-gray-800/90 backdrop-blur-md px-5 py-2 rounded-full border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.3)] flex items-center gap-3 pointer-events-auto">
               <Activity className="text-cyan-400 animate-pulse" size={20} />
+              <div className="flex flex-col items-center">
               <p className="text-xl font-black text-white leading-none tracking-wide">
                 {Math.round(currentDistance)}m
               </p>
+
+              <p className="text-sm text-cyan-300 font-bold">
+                {liveSpeed.toFixed(1)} km/h
+              </p>
+            </div>
             </div>
           )}
         </div>

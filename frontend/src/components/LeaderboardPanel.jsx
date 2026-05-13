@@ -235,11 +235,10 @@ export default function LeaderboardPanel({
         {!loading && !error && myRank && (
           <div className="absolute bottom-0 left-0 w-full bg-gray-800 border-t border-gray-700 p-4 shadow-[0_-10px_20px_rgba(0,0,0,0.3)]">
             <p className="text-xs text-gray-400 uppercase tracking-widest font-bold mb-1">Your Standing</p>
-            <div className="flex items-end justify-between">
-              <p className="text-2xl font-black text-white">Rank #{myRank}</p>
-              <button className="text-blue-400 text-sm font-bold hover:text-blue-300 transition-colors">
-                View Profile →
-              </button>
+            <div>
+              <p className="text-2xl font-black text-white">
+                Rank #{myRank}
+              </p>
             </div>
           </div>
         )}
