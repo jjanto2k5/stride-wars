@@ -1,5 +1,7 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import Run from '../models/Run.js';
+import Territory from '../models/Territory.js';
 import User from '../models/User.js';
 import sendEmail from '../utils/sendEmail.js';
 
@@ -216,6 +218,51 @@ export const updateProfile = async (req, res, next) => {
     });
 
     res.status(200).json({ success: true, user });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @route DELETE /api/auth/me
+// @access Private
+export const deleteAccount = async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+
+    // delete user's runs
+    await Run.deleteMany({ user: userId });
+
+    // release territories they own
+    await Territory.updateMany(
+      { owner: userId },
+      {
+        $unset: { owner: 1 },
+        $set: {
+          color: '#6b7280',
+          defenseScore: 0,
+        },
+      }
+    );
+
+    // remove from conquest history
+    await Territory.updateMany(
+      {},
+      {
+        $pull: {
+          previousOwners: { user: userId },
+          battleHistory: {
+            challenger: userId,
+          },
+        },
+      }
+    );
+
+    await User.findByIdAndDelete(userId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Account deleted successfully',
+    });
   } catch (err) {
     next(err);
   }
