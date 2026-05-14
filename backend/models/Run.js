@@ -1,14 +1,10 @@
 import mongoose from 'mongoose';
 
-// A single GPS point: [longitude, latitude] (GeoJSON order)
 const gpsPointSchema = new mongoose.Schema(
   {
-    coordinates: {
-      type: [Number], // [lng, lat]
-      required: true,
-    },
+    coordinates: { type: [Number], required: true }, // [lng, lat]
     altitude: Number,
-    speed: Number,       // m/s
+    speed: Number,
     timestamp: { type: Date, default: Date.now },
   },
   { _id: false }
@@ -16,65 +12,33 @@ const gpsPointSchema = new mongoose.Schema(
 
 const runSchema = new mongoose.Schema(
   {
-    user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-    },
-
-    // The full GPS track as a GeoJSON LineString for spatial queries
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     route: {
-      type: {
-        type: String,
-        enum: ['LineString'],
-        default: 'LineString',
-      },
-      coordinates: {
-        type: [[Number]],
-        default: [], // ✅ allow empty initially
-      },
+      type: { type: String, enum: ['LineString'], default: 'LineString' },
+      coordinates: { type: [[Number]], default: [] },
     },
-
-    // Raw timestamped GPS points for playback
     trackPoints: [gpsPointSchema],
-
-    // Run metadata
-    distance: { type: Number, default: 0 },     // meters
-    duration: { type: Number, default: 0 },     // seconds
-    avgSpeed: { type: Number, default: 0 },     // m/s
-    maxSpeed: { type: Number, default: 0 },     // m/s
+    distance: { type: Number, default: 0 },
+    duration: { type: Number, default: 0 },
+    avgSpeed: { type: Number, default: 0 },
+    maxSpeed: { type: Number, default: 0 },
     calories: { type: Number, default: 0 },
-
     startTime: { type: Date },
     endTime: { type: Date },
-
-    // Bounding box [minLng, minLat, maxLng, maxLat]
     bbox: { type: [Number], default: [] },
-
-    status: {
-      type: String,
-      enum: ['active', 'completed', 'cancelled'],
-      default: 'active',
-    },
-
-    // Territories captured/affected in this run
-    territoriesCaptured: [
-      { type: mongoose.Schema.Types.ObjectId, ref: 'Territory' },
-    ],
+    status: { type: String, enum: ['active', 'completed', 'cancelled'], default: 'active' },
+    territoriesCaptured: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Territory' }],
   },
   { timestamps: true }
 );
 
-// Index for geospatial queries
+// 2dsphere index requires at least 2 points (a valid LineString)
 runSchema.index(
   { route: '2dsphere' },
-  {
-    partialFilterExpression: {
-      'route.coordinates.1': { $exists: true }, // at least 2 points
-    },
-  }
+  { partialFilterExpression: { 'route.coordinates.1': { $exists: true } } }
 );
 runSchema.index({ user: 1, createdAt: -1 });
 
 const Run = mongoose.model('Run', runSchema);
+
 export default Run;
