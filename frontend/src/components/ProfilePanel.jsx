@@ -1,87 +1,42 @@
 import { useContext, useEffect, useState } from 'react';
 import { AuthContext } from '../context/AuthContext';
-
-import {
-  X,
-  User,
-  LogOut,
-  Trash2,
-  Mail,
-  Map as MapIcon,
-  Activity,
-} from 'lucide-react';
+import { X, User, LogOut, Trash2, Mail, Map as MapIcon, Activity } from 'lucide-react';
 
 function formatStat(value = 0) {
-  return new Intl.NumberFormat('en', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  }).format(value);
+  return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
 }
 
-export default function ProfilePanel({
-  isOpen,
-  onClose,
-}) {
+export default function ProfilePanel({ isOpen, onClose }) {
   const { user, logout } = useContext(AuthContext);
-
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     if (!isOpen) return;
-
     setIsLoading(true);
-
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 250);
-
+    const timer = setTimeout(() => setIsLoading(false), 250);
     return () => clearTimeout(timer);
   }, [isOpen, user]);
 
   useEffect(() => {
     if (!isOpen) return;
-
-    const handleEscape = (e) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
+    const handleEscape = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', handleEscape);
-
-    return () => {
-      window.removeEventListener('keydown', handleEscape);
-    };
+    return () => window.removeEventListener('keydown', handleEscape);
   }, [isOpen, onClose]);
 
   const handleLogout = () => {
     onClose();
-
-    setTimeout(() => {
-      logout();
-    }, 150);
+    setTimeout(() => logout(), 150);
   };
 
   const handleDeleteAccount = async () => {
-    const confirmed = window.confirm(
-      'Delete your account permanently? This cannot be undone.'
-    );
-
-    if (!confirmed) return;
-
+    if (!window.confirm('Delete your account permanently? This cannot be undone.')) return;
     try {
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL}/auth/me`,
-        {
-          method: 'DELETE',
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('token')}`,
-          },
-        }
-      );
-
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/auth/me`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
       const data = await res.json();
-
       if (data.success) {
         logout();
       } else {
@@ -94,41 +49,18 @@ export default function ProfilePanel({
 
   return (
     <>
-      {isOpen && (
-        <div
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[2000] transition-opacity"
-          onClick={onClose}
-        />
-      )}
+      {isOpen && <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[2000] transition-opacity" onClick={onClose} />}
 
       <div
         onPointerDown={(e) => e.stopPropagation()}
-        className={`
-          fixed top-0 left-0
-          h-[100dvh] w-[85vw] max-w-sm
-          bg-gray-900
-          border-r border-gray-800
-          z-[2001]
-          shadow-2xl
-          flex flex-col
-          transform transition-transform
-          duration-300 ease-in-out
-          ${isOpen ? 'translate-x-0' : '-translate-x-full'}
-        `}
+        className={`fixed top-0 left-0 h-[100dvh] w-[85vw] max-w-sm bg-gray-900 border-r border-gray-800 z-[2001] shadow-2xl flex flex-col transform transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}
       >
         <div className="flex items-center justify-between p-6 border-b border-gray-800 bg-gray-900">
           <div className="flex items-center gap-3">
             <User className="text-blue-400" size={24} />
-            <h2 className="text-xl font-bold text-white tracking-wide">
-              Commander Profile
-            </h2>
+            <h2 className="text-xl font-bold text-white tracking-wide">Commander Profile</h2>
           </div>
-
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-white p-2 transition-colors"
-            aria-label="Close profile"
-          >
+          <button onClick={onClose} className="text-gray-400 hover:text-white p-2 transition-colors" aria-label="Close profile">
             <X size={24} />
           </button>
         </div>
@@ -141,90 +73,40 @@ export default function ProfilePanel({
                 <div className="h-6 w-40 bg-gray-700 rounded mb-3" />
                 <div className="h-4 w-56 bg-gray-800 rounded" />
               </div>
-
               <div className="grid grid-cols-2 gap-4">
-                {[...Array(2)].map((_, i) => (
-                  <div
-                    key={i}
-                    className="bg-gray-800/40 border border-gray-700/40 rounded-2xl p-4 h-28"
-                  />
-                ))}
+                {[...Array(2)].map((_, i) => <div key={i} className="bg-gray-800/40 border border-gray-700/40 rounded-2xl p-4 h-28" />)}
               </div>
             </div>
           ) : (
             <>
               <div className="flex flex-col items-center justify-center bg-gray-800/50 border border-gray-700/50 rounded-3xl p-6 shadow-inner">
-                <div
-                  className="w-20 h-20 rounded-full border-4 shadow-[0_0_15px_rgba(0,0,0,0.5)] mb-4"
-                  style={{
-                    borderColor: user?.color || '#3b82f6',
-                    backgroundColor: '#1f2937',
-                  }}
-                />
-
-                <h3 className="text-2xl font-black text-white text-center">
-                  {user?.name || 'Player'}
-                </h3>
-
-                <p className="flex items-center gap-2 text-sm text-gray-400 mt-2 text-center">
-                  <Mail size={14} />
-                  {user?.email || 'No email'}
-                </p>
+                <div className="w-20 h-20 rounded-full border-4 shadow-[0_0_15px_rgba(0,0,0,0.5)] mb-4" style={{ borderColor: user?.color || '#3b82f6', backgroundColor: '#1f2937' }} />
+                <h3 className="text-2xl font-black text-white text-center">{user?.name || 'Player'}</h3>
+                <p className="flex items-center gap-2 text-sm text-gray-400 mt-2 text-center"><Mail size={14} />{user?.email || 'No email'}</p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="bg-gray-800/50 border border-gray-700/50 rounded-2xl p-4 text-center">
-                  <MapIcon
-                    className="text-green-400 mx-auto mb-2"
-                    size={24}
-                  />
-
-                  <p className="text-2xl font-bold text-white">
-                    {formatStat(user?.stats?.areaConquered || 0)}
-                  </p>
-
-                  <p className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">
-                    Sq Meters
-                  </p>
+                  <MapIcon className="text-green-400 mx-auto mb-2" size={24} />
+                  <p className="text-2xl font-bold text-white">{formatStat(user?.stats?.areaConquered || 0)}</p>
+                  <p className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">Sq Meters</p>
                 </div>
-
                 <div className="bg-gray-800/50 border border-gray-700/50 rounded-2xl p-4 text-center">
-                  <Activity
-                    className="text-cyan-400 mx-auto mb-2"
-                    size={24}
-                  />
-
-                  <p className="text-2xl font-bold text-white">
-                    {formatStat(user?.stats?.totalDistance || 0)}
-                  </p>
-
-                  <p className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">
-                    Meters Run
-                  </p>
+                  <Activity className="text-cyan-400 mx-auto mb-2" size={24} />
+                  <p className="text-2xl font-bold text-white">{formatStat(user?.stats?.totalDistance || 0)}</p>
+                  <p className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">Meters Run</p>
                 </div>
               </div>
 
               <div className="space-y-3">
-                <p className="text-xs text-gray-500 uppercase tracking-widest font-bold mb-2 pl-2">
-                  Account Settings
-                </p>
-
-                <button
-                  onClick={handleLogout}
-                  className="w-full flex items-center gap-3 bg-red-900/20 hover:bg-red-900/40 border border-red-900/50 p-4 rounded-2xl text-red-400 transition-all"
-                >
+                <p className="text-xs text-gray-500 uppercase tracking-widest font-bold mb-2 pl-2">Account Settings</p>
+                <button onClick={handleLogout} className="w-full flex items-center gap-3 bg-red-900/20 hover:bg-red-900/40 border border-red-900/50 p-4 rounded-2xl text-red-400 transition-all">
                   <LogOut size={20} />
                   <span className="font-semibold">Log Out</span>
                 </button>
-
-                <button
-                  onClick={handleDeleteAccount}
-                  className="w-full flex items-center gap-3 justify-center bg-red-950/20 hover:bg-red-900/40 border border-red-900/40 p-4 rounded-2xl text-red-500 mt-4 transition-all"
-                >
+                <button onClick={handleDeleteAccount} className="w-full flex items-center gap-3 justify-center bg-red-950/20 hover:bg-red-900/40 border border-red-900/40 p-4 rounded-2xl text-red-500 mt-4 transition-all">
                   <Trash2 size={16} />
-                  <span className="text-sm font-semibold">
-                    Delete Account
-                  </span>
+                  <span className="text-sm font-semibold">Delete Account</span>
                 </button>
               </div>
             </>

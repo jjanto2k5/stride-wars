@@ -13,7 +13,7 @@ export default defineConfig({
     host: true,
     allowedHosts: true, 
     proxy: {
-      // Whenever the frontend asks for "/api", Vite secretly routes it to your backend
+      // Whenever the frontend asks for "/api", Vite routes it to your backend
       '/api': {
         target: 'http://localhost:5000',
         changeOrigin: true,

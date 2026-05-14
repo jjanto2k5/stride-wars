@@ -4,10 +4,7 @@ import User from '../models/User.js';
 export const protect = async (req, res, next) => {
   let token;
 
-  if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith('Bearer ')
-  ) {
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
     token = req.headers.authorization.split(' ')[1];
   }
 
@@ -23,7 +20,6 @@ export const protect = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'User not found or deactivated' });
     }
 
-    // Update last seen
     req.user.lastSeen = new Date();
     await req.user.save({ validateBeforeSave: false });
 
